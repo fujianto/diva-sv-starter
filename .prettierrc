@@ -1,0 +1,28 @@
+{
+	"tabWidth": 4,
+	"useTabs": true,
+	"singleQuote": true,
+	"semi": false,
+	"printWidth": 80,
+	"plugins": [
+		"prettier-plugin-svelte",
+		"prettier-plugin-tailwindcss"
+	],
+	"[svelte]": {
+		"editor.defaultFormatter": "JamesBirtles.svelte-vscode"
+	},
+	"svelteBracketNewLine": false,
+	"svelteIndentScriptAndStyle": true,
+	"pluginSearchDirs": [
+		"."
+	],
+	"tailwindStylesheet": "./src/routes/layout.css",
+	"overrides": [
+		{
+			"files": "*.svelte",
+			"options": {
+				"parser": "svelte"
+			}
+		}
+	]
+}
