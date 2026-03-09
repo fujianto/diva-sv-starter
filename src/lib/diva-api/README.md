@@ -1,7 +1,7 @@
 ## Example Usage (Internal API)
 
 ```
-import { apiRequest } from "./api/apiClient"
+import { apiRequest } from "./diva-api/apiClient"
 
 async function getUsers() {
   const res = await apiRequest({

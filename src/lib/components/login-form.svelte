@@ -29,9 +29,11 @@
 	}: FormEnhance) => {
 		return async ({ result, update }: ResultEnhance) => {
 			formDataRes = result?.data ? result?.data : null
-
+			console.log('Login form result ', JSON.stringify(formDataRes))
 			if (formDataRes?.success) {
-				goto('/')
+				console.log('Login successful, redirecting to dashboard')
+				await goto('/dashboard')
+				// window.location.href = '/dashboard'
 			}
 		}
 	}
