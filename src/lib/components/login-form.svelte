@@ -111,7 +111,7 @@
 						Login with Google
 					</Button>
 					<FieldDescription class="text-center">
-						Don't have an account? <a href="##">Sign up</a>
+						Don't have an account? <a href="/signup">Sign up</a>
 					</FieldDescription>
 				</Field>
 			</FieldGroup>
