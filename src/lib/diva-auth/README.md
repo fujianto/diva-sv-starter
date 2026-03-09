@@ -21,6 +21,8 @@ import {
   sessionHandler,
   cookieManager,
   authGuards,
+  createAuthHandle,
+  mergeAuthConfig,
   AuthHandler,
   SessionHandler,
   CookieManager,
@@ -110,32 +112,23 @@ DEFAULT_AUTH_CONFIG = {
 
 ```ts
 // src/hooks.server.ts
-import { sequence } from '@sveltejs/kit/hooks'
-import { authHandler, AuthGuards } from '$lib/diva-auth'
+import { createAuthHandle } from '$lib/diva-auth'
 
-const guards = new AuthGuards({
+export const handle = createAuthHandle({
   routeProtection: {
     enabled: true,
     protectedRoutes: ['/dashboard/*', '/admin/*'],
     excludedRoutes: ['/dashboard/public']
   }
 })
+```
 
-async function authHook({ event, resolve }) {
-  if (event.url.pathname === '/api/auth/session') {
-    return resolve(event)
-  }
-
-  event.locals.user = null
-  event.locals.isAuthenticated = false
-
-  await authHandler.loadAndValidateSession(event)
-  await guards.enforceConfiguredRoutes(event)
-
-  return resolve(event)
-}
-
-export const handle = sequence(authHook)
+Custom skip paths:
+```ts
+export const handle = createAuthHandle(
+  { routeProtection: { enabled: true, protectedRoutes: ['/dashboard/*'], excludedRoutes: [] } },
+  { skipPaths: ['/api/auth/session', '/api/health'] }
+)
 ```
 
 ## Authentication Flow Diagram
@@ -148,8 +141,10 @@ flowchart TD
   D --> E["Set cookies: access_token, refresh_token, expires_at"]
   D --> F["Set event.locals.user + isAuthenticated=true"]
 
-  G["New request arrives"] --> H["hooks.server.ts authHook"]
-  H --> I["authHandler.loadAndValidateSession(event)"]
+  G["New request arrives"] --> H["handle = createAuthHandle(config, options)"]
+  H --> H1{"Path in skipPaths?"}
+  H1 -->|Yes| S["Resolve route"]
+  H1 -->|No| I["authHandler.loadAndValidateSession(event)"]
   I --> J{"Session exists and valid?"}
   J -->|Yes| K["Continue request with event.locals.user"]
   J -->|No| L{"Has refresh token + expires_at?"}
@@ -161,7 +156,7 @@ flowchart TD
 
   K --> R{"Route protection enabled?"}
   P --> R
-  R -->|No| S["Resolve route"]
+  R -->|No| S
   R -->|Yes| T["authGuards.enforceConfiguredRoutes(event)"]
   T --> U{"Path matches protected and not excluded?"}
   U -->|No| S
@@ -189,6 +184,18 @@ Validates an already-loaded session and refreshes if expired.
 
 ### `isAuthenticated(event)`
 Returns `event.locals.isAuthenticated ?? false`.
+
+## Config Utilities
+
+### `mergeAuthConfig(partialConfig)`
+Deep-merges nested auth config so partial overrides do not drop defaults.
+
+```ts
+const config = mergeAuthConfig({
+  redirectUrls: { login: '/signin' },
+  routeProtection: { enabled: true }
+})
+```
 
 ## SessionHandler API
 
@@ -255,6 +262,21 @@ Applies route protection from `config.routeProtection`:
 - matches exact patterns and wildcard prefix (`/admin/*`)
 - calls `requireAuth` when matched
 
+## Hook Factory API
+
+### `createAuthHandle(config?, options?)`
+Creates a ready-to-use SvelteKit `handle` function that:
+1. initializes `event.locals`
+2. loads and validates session
+3. enforces configured route protection
+
+Options:
+```ts
+{
+  skipPaths?: string[] // default: ['/api/auth/session']
+}
+```
+
 ## Usage Patterns
 
 ### Protect one route manually
@@ -298,3 +320,4 @@ export const actions = {
 - `routeProtection` is opt-in and disabled by default.
 - `refreshEndpoint` should point to an endpoint that returns refreshed tokens.
 - Cookie names are configurable for integration with existing systems.
+- config overrides are deep-merged via `mergeAuthConfig`.

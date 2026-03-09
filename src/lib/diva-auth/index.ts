@@ -25,3 +25,10 @@ export { AuthHandler, authHandler } from './auth'
 
 // Guards
 export { AuthGuards, authGuards } from './guards'
+
+// Hook factory
+export { createAuthHandle } from './hook'
+
+// Config merge helper types
+export type { DeepPartial } from './config'
+export { mergeAuthConfig } from './config'

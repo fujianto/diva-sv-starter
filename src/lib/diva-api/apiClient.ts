@@ -28,6 +28,7 @@ interface RequestOptions {
   retryCount?: number
   retryDelayMs?: number
   retryBackoffMultiplier?: number
+  timeoutMs?: number
   fetchFn?: typeof fetch
 }
 
@@ -47,6 +48,7 @@ export async function apiRequest<T>({
   retryCount,
   retryDelayMs = 0,
   retryBackoffMultiplier = 2,
+  timeoutMs,
   fetchFn = fetch
 }: RequestOptions): Promise<ApiResponse<T>> {
 
@@ -208,14 +210,56 @@ export async function apiRequest<T>({
         await new Promise((resolve) => setTimeout(resolve, ms))
       }
 
+      const createCombinedSignal = (baseSignal: AbortSignal, timeoutSignal: AbortSignal): AbortSignal => {
+        if (typeof AbortSignal !== "undefined" && "any" in AbortSignal) {
+          return AbortSignal.any([baseSignal, timeoutSignal])
+        }
+
+        const combinedController = new AbortController()
+        const forwardAbort = () => combinedController.abort()
+        baseSignal.addEventListener("abort", forwardAbort)
+        timeoutSignal.addEventListener("abort", forwardAbort)
+        return combinedController.signal
+      }
+
+      const runWithAttemptTimeout = async (
+        requestFactory: (signal: AbortSignal) => Promise<Response>
+      ): Promise<Response> => {
+        if (!timeoutMs || timeoutMs <= 0) {
+          return requestFactory(controller.signal)
+        }
+
+        const timeoutController = new AbortController()
+        const timeoutError = Object.assign(new Error(`Request timed out after ${timeoutMs}ms`), {
+          name: "TimeoutError"
+        })
+        let timedOut = false
+        const timer = setTimeout(() => {
+          timedOut = true
+          timeoutController.abort(timeoutError)
+        }, timeoutMs)
+
+        try {
+          const signal = createCombinedSignal(controller.signal, timeoutController.signal)
+          return await requestFactory(signal)
+        } catch (error) {
+          if (timedOut && error instanceof Error && error.name === "AbortError") {
+            throw timeoutError
+          }
+          throw error
+        } finally {
+          clearTimeout(timer)
+        }
+      }
+
       const requestWithRetry = async (
-        requestFactory: () => Promise<Response>,
+        requestFactory: (signal: AbortSignal) => Promise<Response>,
         maxRetryCount: number
       ): Promise<Response> => {
         let attempt = 0
         while (true) {
           try {
-            const response = await requestFactory()
+            const response = await runWithAttemptTimeout(requestFactory)
             if (response.ok || !shouldRetryStatus(response.status) || attempt >= maxRetryCount) {
               return response
             }
@@ -327,13 +371,13 @@ export async function apiRequest<T>({
       const resolvedRetryCount = retryCount ?? (resolvedMethod === "GET" ? 2 : 0)
 
       let res = await requestWithRetry(
-        () =>
+        (signal) =>
           fetchFn(url, {
             method: resolvedMethod,
             credentials,
             headers: createHeaders(token, currentAuth),
             body: body ? JSON.stringify(body) : undefined,
-            signal: controller.signal
+            signal
           }),
         resolvedRetryCount
       )
@@ -351,13 +395,13 @@ export async function apiRequest<T>({
           if (refreshedCredentials?.access_token) {
             currentAuth = refreshedCredentials
             res = await requestWithRetry(
-              () =>
+              (signal) =>
                 fetchFn(url, {
                   method: resolvedMethod,
                   credentials,
                   headers: createHeaders(currentAuth.access_token, currentAuth),
                   body: body ? JSON.stringify(body) : undefined,
-                  signal: controller.signal
+                  signal
                 }),
               resolvedRetryCount
             )

@@ -19,8 +19,12 @@ flowchart TD
 
   B --> L["Build headers (Content-Type, Authorization, refresh headers)"]
   L --> M["Execute fetch with AbortController.signal"]
+  M --> T0{"timeoutMs reached?"}
+  T0 -->|Yes| T1["Abort attempt with TimeoutError"]
+  T1 --> Q
+  T0 -->|No| N
 
-  M --> N{"Response OK?"}
+  N{"Response OK?"}
   N -->|Yes| O["Parse JSON (empty/invalid success body => [])"]
   O --> P["Return success response"]
 

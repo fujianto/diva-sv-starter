@@ -6,15 +6,15 @@
 import { error, redirect } from '@sveltejs/kit'
 import type { RequestEvent } from '@sveltejs/kit'
 import type { DivaAuthConfig } from './types'
-import { DEFAULT_AUTH_CONFIG } from './types'
 import { AuthHandler } from './auth'
+import { mergeAuthConfig, type DeepPartial } from './config'
 
 export class AuthGuards {
   private config: DivaAuthConfig
   private authHandler: AuthHandler
 
-  constructor(config: Partial<DivaAuthConfig> = {}) {
-    this.config = { ...DEFAULT_AUTH_CONFIG, ...config }
+  constructor(config: DeepPartial<DivaAuthConfig> = {}) {
+    this.config = mergeAuthConfig(config)
     this.authHandler = new AuthHandler(config)
   }
 

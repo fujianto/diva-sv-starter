@@ -83,6 +83,7 @@ type RequestOptions = {
   retryCount?: number
   retryDelayMs?: number
   retryBackoffMultiplier?: number
+  timeoutMs?: number
   fetchFn?: typeof fetch
 }
 ```
@@ -98,6 +99,7 @@ type RequestOptions = {
 - `retryCount`: max retries for transient failure.
 - `retryDelayMs`: base backoff delay in ms.
 - `retryBackoffMultiplier`: exponential multiplier (default `2`).
+- `timeoutMs`: timeout per attempt in milliseconds.
 
 ## Internal Endpoint Mapping
 
@@ -155,6 +157,10 @@ If request fails with token-expired conditions and `authCredentials.refresh_toke
 Transient retries apply to:
 - statuses: `408, 425, 429, 500, 502, 503, 504`
 - network/timeouts (non-abort)
+
+Per-attempt timeout:
+- Set `timeoutMs` to abort slow requests.
+- Timeout failures are retryable (based on `retryCount`).
 
 Backoff formula:
 ```txt
@@ -264,7 +270,8 @@ await apiRequest({
   requiresAuth: false,
   retryCount: 3,
   retryDelayMs: 200,
-  retryBackoffMultiplier: 2
+  retryBackoffMultiplier: 2,
+  timeoutMs: 3000
 })
 ```
 

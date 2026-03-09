@@ -6,15 +6,15 @@
 import type { RequestEvent, Cookies } from '@sveltejs/kit'
 import { env } from '$env/dynamic/private'
 import type { LocalsUser, LoginResponseData, DivaAuthConfig } from './types'
-import { DEFAULT_AUTH_CONFIG } from './types'
 import { CookieManager } from './cookieManager'
+import { mergeAuthConfig, type DeepPartial } from './config'
 
 export class SessionHandler {
   private config: DivaAuthConfig
   private cookieManager: CookieManager
 
-  constructor(config: Partial<DivaAuthConfig> = {}) {
-    this.config = { ...DEFAULT_AUTH_CONFIG, ...config }
+  constructor(config: DeepPartial<DivaAuthConfig> = {}) {
+    this.config = mergeAuthConfig(config)
     this.cookieManager = new CookieManager(config)
   }
 

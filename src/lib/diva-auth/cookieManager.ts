@@ -5,13 +5,13 @@
 
 import type { Cookies } from '@sveltejs/kit'
 import type { DivaAuthConfig } from './types'
-import { DEFAULT_AUTH_CONFIG } from './types'
+import { mergeAuthConfig, type DeepPartial } from './config'
 
 export class CookieManager {
   private config: DivaAuthConfig
 
-  constructor(config: Partial<DivaAuthConfig> = {}) {
-    this.config = { ...DEFAULT_AUTH_CONFIG, ...config }
+  constructor(config: DeepPartial<DivaAuthConfig> = {}) {
+    this.config = mergeAuthConfig(config)
   }
 
   /**

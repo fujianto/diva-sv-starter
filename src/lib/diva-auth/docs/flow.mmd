@@ -5,8 +5,10 @@ flowchart TD
   D --> E["Set cookies: access_token, refresh_token, expires_at"]
   D --> F["Set event.locals.user + isAuthenticated=true"]
 
-  G["New request arrives"] --> H["hooks.server.ts authHook"]
-  H --> I["authHandler.loadAndValidateSession(event)"]
+  G["New request arrives"] --> H["handle = createAuthHandle(config, options)"]
+  H --> H1{"Path in skipPaths?"}
+  H1 -->|Yes| S["Resolve route"]
+  H1 -->|No| I["authHandler.loadAndValidateSession(event)"]
   I --> J{"Session exists and valid?"}
   J -->|Yes| K["Continue request with event.locals.user"]
   J -->|No| L{"Has refresh token + expires_at?"}
@@ -18,7 +20,7 @@ flowchart TD
 
   K --> R{"Route protection enabled?"}
   P --> R
-  R -->|No| S["Resolve route"]
+  R -->|No| S
   R -->|Yes| T["authGuards.enforceConfiguredRoutes(event)"]
   T --> U{"Path matches protected and not excluded?"}
   U -->|No| S

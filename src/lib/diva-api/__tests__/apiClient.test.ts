@@ -64,7 +64,7 @@ const createMockResponse = ({
 describe("apiRequest", () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mocks.createRequestMock.mockReturnValue({ signal: "signal" })
+    mocks.createRequestMock.mockReturnValue({ signal: new AbortController().signal })
     mocks.getAccessTokenMock.mockReturnValue(null)
     mocks.isTokenExpiredMock.mockReturnValue(false)
   })
@@ -522,6 +522,48 @@ describe("apiRequest", () => {
     expect(result.success).toBe(true)
 
     setTimeoutSpy.mockRestore()
+    vi.useRealTimers()
+  })
+
+  it("supports timeoutMs and retries after timeout", async () => {
+    vi.useFakeTimers()
+
+    const fetchFn = vi
+      .fn()
+      .mockImplementationOnce(
+        async (_url: string, init?: RequestInit) =>
+          await new Promise<Response>((_resolve, reject) => {
+            const signal = init?.signal as AbortSignal
+            signal.addEventListener("abort", () =>
+              reject(Object.assign(new Error("aborted"), { name: "AbortError" }))
+            )
+          })
+      )
+      .mockResolvedValueOnce(
+        createMockResponse({
+          ok: true,
+          status: 200,
+          json: { success: true, data: [{ id: 1 }] }
+        })
+      )
+
+    const pending = apiRequest({
+      endpoint: "getUsers",
+      baseEndpoint: TEST_BASE_ENDPOINT,
+      method: "GET",
+      requiresAuth: false,
+      timeoutMs: 10,
+      retryCount: 1,
+      retryDelayMs: 0,
+      fetchFn
+    })
+
+    await vi.advanceTimersByTimeAsync(20)
+    const result = await pending
+
+    expect(fetchFn).toHaveBeenCalledTimes(2)
+    expect(result.success).toBe(true)
+
     vi.useRealTimers()
   })
 })
