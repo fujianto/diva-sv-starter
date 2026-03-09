@@ -18,6 +18,47 @@ export class AuthGuards {
     this.authHandler = new AuthHandler(config)
   }
 
+  private matchesRoutePattern(pathname: string, pattern: string): boolean {
+    if (pattern === pathname) {
+      return true
+    }
+
+    if (pattern.endsWith('/*')) {
+      const basePath = pattern.slice(0, -2)
+      return pathname === basePath || pathname.startsWith(`${basePath}/`)
+    }
+
+    return false
+  }
+
+  private matchesAnyRoute(pathname: string, patterns: string[]): boolean {
+    return patterns.some((pattern) => this.matchesRoutePattern(pathname, pattern))
+  }
+
+  /**
+   * Enforce authentication for configured protected routes.
+   * Disabled by default via config.routeProtection.enabled = false.
+   *
+   * Recommended usage: call once from hooks.server.ts after session load.
+   */
+  async enforceConfiguredRoutes(event: RequestEvent): Promise<void> {
+    const routeProtection = this.config.routeProtection
+    if (!routeProtection.enabled) {
+      return
+    }
+
+    const pathname = event.url.pathname
+    if (this.matchesAnyRoute(pathname, routeProtection.excludedRoutes)) {
+      return
+    }
+
+    if (!this.matchesAnyRoute(pathname, routeProtection.protectedRoutes)) {
+      return
+    }
+
+    await this.requireAuth(event)
+  }
+
   /**
    * Require authentication guard
    * Use in +page.server.ts or +layout.server.ts to protect routes

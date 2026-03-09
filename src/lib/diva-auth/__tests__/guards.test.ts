@@ -20,7 +20,21 @@ vi.mock('@sveltejs/kit', async () => {
   }
 })
 
-const createMockEvent = (authenticated = false): Partial<RequestEvent> => ({
+const createMockEvent = (authenticated = false, pathname = '/dashboard'): Partial<RequestEvent> => ({
+  cookies: {
+    get: vi.fn((name: string) => {
+      if (!authenticated) return undefined
+      if (name === 'access_token') return 'test_token'
+      if (name === 'refresh_token') return 'test_refresh'
+      if (name === 'expires_at') return String(Date.now() + 3600000)
+      return undefined
+    }),
+    set: vi.fn(),
+    delete: vi.fn(),
+    getAll: vi.fn(() => []),
+    has: vi.fn(),
+    serialize: vi.fn(),
+  } as any,
   locals: {
     user: authenticated
       ? {
@@ -36,6 +50,8 @@ const createMockEvent = (authenticated = false): Partial<RequestEvent> => ({
       : null,
     isAuthenticated: authenticated,
   },
+  fetch: vi.fn(),
+  url: new URL(`http://localhost${pathname}`),
 })
 
 describe('AuthGuards', () => {
@@ -104,7 +120,7 @@ describe('AuthGuards', () => {
       guards.redirectToLogin(event, message)
     } catch (e) {
       expect((e as Error).message).toContain('redirect')
-      expect((e as Error).message).toContain('Session expired')
+      expect((e as Error).message).toContain('Session+expired')
     }
   })
 
@@ -138,8 +154,55 @@ describe('AuthGuards', () => {
       } catch (e) {
         const errorMsg = (e as Error).message
         expect(errorMsg).toContain('redirect')
-        expect(errorMsg).toContain('Please log in')
+        expect(errorMsg).toContain('Please%20log%20in')
       }
+    })
+  })
+
+  describe('enforceConfiguredRoutes', () => {
+    it('should do nothing when feature is disabled by default', async () => {
+      const event = createMockEvent(false, '/dashboard') as RequestEvent
+
+      await expect(guards.enforceConfiguredRoutes(event)).resolves.toBeUndefined()
+    })
+
+    it('should redirect when feature enabled and route matches protectedRoutes', async () => {
+      const enabledGuards = new AuthGuards({
+        routeProtection: {
+          enabled: true,
+          protectedRoutes: ['/dashboard', '/admin/*'],
+          excludedRoutes: [],
+        },
+      })
+      const event = createMockEvent(false, '/dashboard') as RequestEvent
+
+      await expect(enabledGuards.enforceConfiguredRoutes(event)).rejects.toThrow('redirect')
+    })
+
+    it('should not redirect when route does not match protectedRoutes', async () => {
+      const enabledGuards = new AuthGuards({
+        routeProtection: {
+          enabled: true,
+          protectedRoutes: ['/dashboard', '/admin/*'],
+          excludedRoutes: [],
+        },
+      })
+      const event = createMockEvent(false, '/public') as RequestEvent
+
+      await expect(enabledGuards.enforceConfiguredRoutes(event)).resolves.toBeUndefined()
+    })
+
+    it('should not redirect when route matches excludedRoutes', async () => {
+      const enabledGuards = new AuthGuards({
+        routeProtection: {
+          enabled: true,
+          protectedRoutes: ['/dashboard/*'],
+          excludedRoutes: ['/dashboard/public'],
+        },
+      })
+      const event = createMockEvent(false, '/dashboard/public') as RequestEvent
+
+      await expect(enabledGuards.enforceConfiguredRoutes(event)).resolves.toBeUndefined()
     })
   })
 })

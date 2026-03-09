@@ -1,42 +1,136 @@
-# Diva-Auth Library
+# diva-auth
 
-A complete, production-ready authentication library for SvelteKit that handles login, session management, token refresh, route protection, and more.
+`diva-auth` provides session handling, cookie management, refresh flow, and route guards for SvelteKit.
+
+## Flow Diagram
+
+![diva-auth flow](./docs/flow.png)
 
 ## Features
+- login/logout helpers
+- cookie-based session persistence
+- access token refresh support
+- route guard helpers (`requireAuth`, role checks)
+- optional centralized protected-route enforcement (disabled by default)
 
-✅ **Secure Session Management** - Persistent sessions via httpOnly cookies
-✅ **Automatic Token Refresh** - Tokens refreshed before expiration in server hooks
-✅ **Route Protection** - Guards to protect routes requiring authentication
-✅ **Type-Safe** - Full TypeScript support with generics
-✅ **Zero Dependencies** - Uses only SvelteKit built-ins
-✅ **Clean API** - Simple, composable functions
-✅ **Unit Tested** - Comprehensive test suite with Vitest
-✅ **Server-Side Security** - All sensitive operations happen server-side
+## Exports
 
-## Installation
+```ts
+import {
+  authHandler,
+  sessionHandler,
+  cookieManager,
+  authGuards,
+  AuthHandler,
+  SessionHandler,
+  CookieManager,
+  AuthGuards,
+  DEFAULT_AUTH_CONFIG,
+  type DivaAuthConfig,
+  type LoginResponseData,
+  type LocalsUser
+} from '$lib/diva-auth'
+```
 
-The library is already in your project at `/src/lib/diva-auth`. Just import and use!
+## Core Types
 
-## Quick Start
+### `LoginResponseData`
+```ts
+{
+  success: boolean
+  access_token: string
+  refresh_token: string
+  expires_at: number
+  user: {
+    id: number
+    username: string
+    email: string
+    display_name: string
+    roles: string[]
+  }
+}
+```
 
-### 1. Update your hooks
+### `DivaAuthConfig`
+```ts
+{
+  cookieNames: {
+    accessToken: string
+    refreshToken: string
+    expiresAt: string
+  }
+  cookieOptions: {
+    httpOnly: boolean
+    secure: boolean
+    sameSite: 'strict' | 'lax' | 'none'
+    path: string
+  }
+  refreshEndpoint: string
+  redirectUrls: {
+    login: string
+    dashboard: string
+  }
+  routeProtection: {
+    enabled: boolean
+    protectedRoutes: string[]
+    excludedRoutes: string[]
+  }
+}
+```
 
-The `/src/hooks.server.ts` file is already created and handles session loading on every request:
+## Default Config
 
-```typescript
+```ts
+DEFAULT_AUTH_CONFIG = {
+  cookieNames: {
+    accessToken: 'access_token',
+    refreshToken: 'refresh_token',
+    expiresAt: 'expires_at'
+  },
+  cookieOptions: {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/'
+  },
+  refreshEndpoint: '/api/auth/refresh',
+  redirectUrls: {
+    login: '/login',
+    dashboard: '/dashboard'
+  },
+  routeProtection: {
+    enabled: false,
+    protectedRoutes: [],
+    excludedRoutes: []
+  }
+}
+```
+
+## Recommended Hook Setup
+
+```ts
 // src/hooks.server.ts
 import { sequence } from '@sveltejs/kit/hooks'
-import { authHandler } from '$lib/diva-auth'
+import { authHandler, AuthGuards } from '$lib/diva-auth'
+
+const guards = new AuthGuards({
+  routeProtection: {
+    enabled: true,
+    protectedRoutes: ['/dashboard/*', '/admin/*'],
+    excludedRoutes: ['/dashboard/public']
+  }
+})
 
 async function authHook({ event, resolve }) {
+  if (event.url.pathname === '/api/auth/session') {
+    return resolve(event)
+  }
+
   event.locals.user = null
   event.locals.isAuthenticated = false
 
-  try {
-    await authHandler.loadAndValidateSession(event)
-  } catch (error) {
-    console.error('Auth hook error:', error)
-  }
+  await authHandler.loadAndValidateSession(event)
+  await guards.enforceConfiguredRoutes(event)
 
   return resolve(event)
 }
@@ -44,287 +138,128 @@ async function authHook({ event, resolve }) {
 export const handle = sequence(authHook)
 ```
 
-### 2. Use in your login action
+## Authentication Flow Diagram
 
-```typescript
-// src/routes/login/+page.server.ts
-import { authHandler } from '$lib/diva-auth'
+```mermaid
+flowchart TD
+  A["User submits login"] --> B["Backend calls login API"]
+  B --> C["authHandler.handleLogin(event, loginData)"]
+  C --> D["sessionHandler.createSession(...)"]
+  D --> E["Set cookies: access_token, refresh_token, expires_at"]
+  D --> F["Set event.locals.user + isAuthenticated=true"]
 
-export const actions = {
-  doLogin: async ({ request, fetch, locals, cookies }) => {
-    // ... login validation ...
+  G["New request arrives"] --> H["hooks.server.ts authHook"]
+  H --> I["authHandler.loadAndValidateSession(event)"]
+  I --> J{"Session exists and valid?"}
+  J -->|Yes| K["Continue request with event.locals.user"]
+  J -->|No| L{"Has refresh token + expires_at?"}
+  L -->|No| M["Unauthenticated"]
+  L -->|Yes| N["sessionHandler.refreshSession(event)"]
+  N --> O{"Refresh success?"}
+  O -->|Yes| P["Update cookies + locals, continue"]
+  O -->|No| Q["clearSession() -> unauthenticated"]
 
-    const response = await apiRequest(/* ... */)
+  K --> R{"Route protection enabled?"}
+  P --> R
+  R -->|No| S["Resolve route"]
+  R -->|Yes| T["authGuards.enforceConfiguredRoutes(event)"]
+  T --> U{"Path matches protected and not excluded?"}
+  U -->|No| S
+  U -->|Yes, authenticated| S
+  U -->|Yes, unauthenticated| V["Redirect 303 to /login?message=..."]
 
-    if (response.success) {
-      // Set cookies and populate event.locals
-      authHandler.handleLogin({ locals, cookies }, response.data)
-
-      // Redirect to dashboard
-      redirect(303, '/dashboard')
-    }
-  }
-}
+  W["Logout action"] --> X["authHandler.handleLogout(event)"]
+  X --> Y["Delete auth cookies + clear locals"]
 ```
 
-### 3. Protect routes with guards
+## AuthHandler API
 
-```typescript
-// src/routes/dashboard/+page.server.ts
-import { authGuards } from '$lib/diva-auth'
+### `handleLogin(event, loginData)`
+Creates session cookies + populates `event.locals.user`.
 
-export async function load(event) {
-  // Redirect to login if not authenticated
-  return authGuards.requireAuth(event)
-}
+### `handleLogout(event)`
+Clears auth cookies and locals.
+
+### `loadAndValidateSession(event)`
+Loads cookie session, refreshes if needed, writes locals.
+Returns `boolean` valid state.
+
+### `validateSession(event)`
+Validates an already-loaded session and refreshes if expired.
+
+### `isAuthenticated(event)`
+Returns `event.locals.isAuthenticated ?? false`.
+
+## SessionHandler API
+
+### `createSession(eventOrCookies, loginData, locals?)`
+Sets cookies and local user from login payload.
+
+### `loadSession(event)`
+Returns partial session from cookies or `null`.
+
+### `refreshSession(event)`
+Calls refresh endpoint and updates cookies.
+
+### `isSessionValid(event)` / `isSessionExpired(event)`
+Expiry checks.
+
+### `clearSession(event)`
+Deletes auth cookies and resets locals.
+
+### `getSessionExpiry(event)`
+Returns remaining seconds until expiry.
+
+## CookieManager API
+
+### `setAuthCookies(cookies, accessToken, refreshToken, expiresAt)`
+Writes all auth cookies.
+
+### `getAuthCookies(cookies)`
+Returns:
+```ts
+{ accessToken?: string; refreshToken?: string; expiresAt?: string }
 ```
 
-## API Reference
+### `deleteAuthCookies(cookies)`
+Deletes all auth cookies.
 
-### AuthHandler
+### `hasAuthCookies(cookies)`
+Boolean check for complete auth cookies.
 
-Main handler for authentication operations.
+### `isTokenExpired(expiresAt)`
+Expiry utility for string/number timestamp.
 
-```typescript
-import { authHandler } from '$lib/diva-auth'
+## AuthGuards API
 
-// Handle successful login
-authHandler.handleLogin(event, loginResponse)
+### `requireAuth(event)`
+Validates session, redirects to login when unauthenticated.
+Returns `{ user }` when valid.
 
-// Clear session on logout
-authHandler.handleLogout(event)
+### `isAuthenticated(event)`
+Boolean auth check.
 
-// Load and validate session from cookies
-await authHandler.loadAndValidateSession(event)
+### `hasRole(event, roleOrRoles)`
+Checks role membership.
 
-// Validate existing session and refresh if needed
-await authHandler.validateSession(event)
+### `requireRole(event, roleOrRoles)`
+Throws `403` if role check fails.
 
-// Check if user is authenticated
-authHandler.isAuthenticated(event)
-```
+### `redirectToLogin(event, message?)`
+Redirect helper with optional message query.
 
-### SessionHandler
+### `enforceConfiguredRoutes(event)`
+Applies route protection from `config.routeProtection`:
+- `enabled: false` => no-op
+- checks `excludedRoutes` first
+- matches exact patterns and wildcard prefix (`/admin/*`)
+- calls `requireAuth` when matched
 
-Low-level session management.
+## Usage Patterns
 
-```typescript
-import { SessionHandler } from '$lib/diva-auth'
-
-const sessionHandler = new SessionHandler()
-
-// Create session from login response
-sessionHandler.createSession(event, loginData)
-
-// Load session from cookies
-const session = sessionHandler.loadSession(event)
-
-// Check if session is valid (not expired)
-sessionHandler.isSessionValid(event)
-
-// Check if session is expired
-sessionHandler.isSessionExpired(event)
-
-// Refresh tokens using refresh token
-const refreshed = await sessionHandler.refreshSession(event)
-
-// Clear session (logout)
-sessionHandler.clearSession(event)
-
-// Get seconds until expiry
-const secondsLeft = sessionHandler.getSessionExpiry(event)
-```
-
-### CookieManager
-
-Cookie operations with security constraints.
-
-```typescript
-import { CookieManager } from '$lib/diva-auth'
-
-const manager = new CookieManager()
-
-// Set individual cookie
-manager.setCookie(cookies, 'token_name', 'value', expiresAt)
-
-// Get cookie value
-const value = manager.getCookie(cookies, 'token_name')
-
-// Delete cookie
-manager.deleteCookie(cookies, 'token_name')
-
-// Set all auth cookies at once
-manager.setAuthCookies(cookies, accessToken, refreshToken, expiresAt)
-
-// Get all auth cookies
-const { accessToken, refreshToken, expiresAt } = manager.getAuthCookies(cookies)
-
-// Check if auth cookies exist
-manager.hasAuthCookies(cookies)
-
-// Delete all auth cookies
-manager.deleteAuthCookies(cookies)
-
-// Check if token is expired
-manager.isTokenExpired(expiresAt)
-```
-
-### AuthGuards
-
-Route protection and authorization helpers.
-
-```typescript
-import { authGuards } from '$lib/diva-auth'
-
-// Require authentication guard
-export async function load(event) {
-  return authGuards.requireAuth(event)  // Throws redirect if not authenticated
-}
-
-// Check if authenticated
-if (!authGuards.isAuthenticated(event)) {
-  redirect(303, '/login')
-}
-
-// Check if user has role
-if (!authGuards.hasRole(event, 'admin')) {
-  error(403, 'Insufficient permissions')
-}
-
-// Require specific role
-authGuards.requireRole(event, 'admin')  // Throws 403 if not authorized
-
-// Redirect to login with message
-authGuards.redirectToLogin(event, 'Session expired')
-```
-
-## Data Flow
-
-### Login Flow
-
-```
-1. User submits login form
-2. +page.server.ts validates and calls API
-3. API returns: { success: true, access_token, refresh_token, expires_at, user }
-4. Call authHandler.handleLogin()
-5. Cookies set + event.locals.user populated
-6. Redirect to /dashboard
-```
-
-### Auto-Refresh Flow (on every request)
-
-```
-1. hooks.server.ts runs before route handler
-2. Check event.locals.user - if exists, continue
-3. If not, load from cookies
-4. Check if expired: Date.now() >= expires_at
-5. If expired, call sessionHandler.refreshSession()
-6. If refresh succeeds, update cookies and locals
-7. If refresh fails, clear session
-8. Route handler gets access to event.locals.user
-```
-
-### Protected Route Flow
-
-```
-1. Route calls authGuards.requireAuth(event)
-2. If event.locals.user exists and valid, return user data
-3. If not, redirect to /login?message=Please log in
-```
-
-## Configuration
-
-Default configuration in `/src/lib/diva-auth/types.ts`:
-
-```typescript
-const DEFAULT_AUTH_CONFIG = {
-  cookieNames: {
-    accessToken: 'access_token',
-    refreshToken: 'refresh_token',
-    expiresAt: 'expires_at',
-  },
-  cookieOptions: {
-    httpOnly: true,        // JS cannot access (XSS protection)
-    secure: true,          // HTTPS only in production
-    sameSite: 'lax',       // CSRF protection
-    path: '/',
-  },
-  refreshEndpoint: '/api/auth/refresh',  // Your refresh token endpoint
-  redirectUrls: {
-    login: '/login',
-    dashboard: '/dashboard',
-  },
-}
-```
-
-To use custom config, create new instances:
-
-```typescript
-import { AuthHandler } from '$lib/diva-auth'
-
-const customAuth = new AuthHandler({
-  cookieNames: {
-    accessToken: 'at',
-    refreshToken: 'rt',
-    expiresAt: 'exp',
-  },
-  refreshEndpoint: '/api/token/refresh',
-})
-```
-
-## Cookie Structure
-
-Three httpOnly cookies are set on successful login:
-
-| Cookie | Value | Expires |
-|--------|-------|---------|
-| `access_token` | JWT access token | Token expiry |
-| `refresh_token` | JWT refresh token | Not set (session) |
-| `expires_at` | Expiry timestamp (ms) | Not set (session) |
-
-All cookies have:
-- `httpOnly: true` - Prevents JS access (XSS protection)
-- `secure: true` (production) - HTTPS only
-- `sameSite: 'lax'` - CSRF protection
-- `path: /` - Accessible on all routes
-
-## Testing
-
-Run tests with Vitest:
-
-```bash
-npm test
-# or
-npm run test:watch
-```
-
-Test files:
-- `__tests__/cookieManager.test.ts` - Cookie operations
-- `__tests__/sessionHandler.test.ts` - Session management
-- `__tests__/auth.test.ts` - Authentication logic
-- `__tests__/guards.test.ts` - Route protection
-
-## Common Patterns
-
-### Conditional rendering based on auth status
-
-```svelte
-<script>
-  import { page } from '$app/stores'
-</script>
-
-{#if $page.data.user}
-  <p>Welcome, {$page.data.user.display_name}</p>
-  <button>Logout</button>
-{:else}
-  <a href="/login">Login</a>
-{/if}
-```
-
-### Protected layout
-
-```typescript
-// src/routes/protected/+layout.server.ts
+### Protect one route manually
+```ts
+// +page.server.ts
 import { authGuards } from '$lib/diva-auth'
 
 export async function load(event) {
@@ -332,95 +267,34 @@ export async function load(event) {
 }
 ```
 
-### Admin-only page
+### Protect all selected routes globally
+Use `AuthGuards.enforceConfiguredRoutes(event)` once in hook (see setup section).
 
-```typescript
-// src/routes/admin/+page.server.ts
+### Role-restricted page
+```ts
 import { authGuards } from '$lib/diva-auth'
 
 export async function load(event) {
-  authGuards.requireRole(event, 'admin')
+  await authGuards.requireAuth(event)
+  authGuards.requireRole(event, ['admin', 'super-admin'])
   return { user: event.locals.user }
 }
 ```
 
 ### Logout action
-
-```typescript
-// src/routes/+layout.server.ts
+```ts
 import { authHandler } from '$lib/diva-auth'
+import { redirect } from '@sveltejs/kit'
 
 export const actions = {
-  logout: async ({ locals, cookies }) => {
-    authHandler.handleLogout({ locals, cookies })
+  logout: async (event) => {
+    authHandler.handleLogout(event)
     redirect(303, '/login')
   }
 }
 ```
 
-### Check auth in load function
-
-```typescript
-// src/routes/dashboard/+page.server.ts
-import { authGuards, redirect } from '$lib/diva-auth'
-
-export async function load(event) {
-  if (!authGuards.isAuthenticated(event)) {
-    authGuards.redirectToLogin(event, 'Please log in first')
-  }
-
-  return { user: event.locals.user }
-}
-```
-
-## Error Handling
-
-The library handles these scenarios gracefully:
-
-| Scenario | Action |
-|----------|--------|
-| Missing cookie | Load fails, set `event.locals.user = null` |
-| Expired token | Attempt refresh, clear on failure |
-| Refresh fails | Clear session, redirect to login |
-| Invalid response | Log error, continue without auth |
-| Missing headers | Skip and continue |
-
-## Security Considerations
-
-✅ **httpOnly Cookies** - Prevents JavaScript/XSS access to tokens
-✅ **Secure Flag** - Only sent over HTTPS in production
-✅ **SameSite** - Prevents CSRF attacks
-✅ **Token Refresh** - Automatic refresh before expiry
-✅ **Server-Side Validation** - All checks happen server-side
-✅ **No Local Storage** - Tokens never exposed to client-side code
-
-## Troubleshooting
-
-### "Session not persisting after refresh"
-- Check: Are cookies being set? (DevTools > Application > Cookies)
-- Check: Browser privacy settings not blocking cookies?
-- Check: Cookie `path` configured correctly?
-
-### "Automatic refresh not working"
-- Check: `/api/auth/refresh` endpoint exists and works?
-- Check: Token expiry time set correctly?
-- Check: `hooks.server.ts` is being called?
-
-### "Not redirected to login when unauthorized"
-- Check: Using `requireAuth()` guard in route `+page.server.ts`?
-- Check: Cookie expiry correct?
-- Check: No error suppression hiding redirect?
-
-## Future Enhancements
-
-Possible additions:
-- Two-factor authentication
-- Social login integration
-- Remember me functionality
-- Passwordless authentication
-- Rate limiting
-- Activity logging
-
-## License
-
-MIT
+## Notes
+- `routeProtection` is opt-in and disabled by default.
+- `refreshEndpoint` should point to an endpoint that returns refreshed tokens.
+- Cookie names are configurable for integration with existing systems.

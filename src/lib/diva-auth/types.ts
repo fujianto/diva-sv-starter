@@ -54,6 +54,11 @@ export interface DivaAuthConfig {
     login: string
     dashboard: string
   }
+  routeProtection: {
+    enabled: boolean
+    protectedRoutes: string[]
+    excludedRoutes: string[]
+  }
 }
 
 export const DEFAULT_AUTH_CONFIG: DivaAuthConfig = {
@@ -72,5 +77,10 @@ export const DEFAULT_AUTH_CONFIG: DivaAuthConfig = {
   redirectUrls: {
     login: '/login',
     dashboard: '/dashboard',
+  },
+  routeProtection: {
+    enabled: false,
+    protectedRoutes: [],
+    excludedRoutes: [],
   },
 }

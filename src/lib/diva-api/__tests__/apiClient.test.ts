@@ -111,6 +111,142 @@ describe("apiRequest", () => {
     expect(result.success).toBe(true)
   })
 
+  it("supports backend usage by resolving internal URL with BASE_ENDPOINT", async () => {
+    const originalWindow = (globalThis as { window?: unknown }).window
+    // Simulate server-side runtime.
+    delete (globalThis as { window?: unknown }).window
+
+    const fetchFn = vi.fn(async () =>
+      createMockResponse({
+        ok: true,
+        status: 200,
+        json: { success: true, data: [] }
+      })
+    )
+
+    try {
+      const result = await apiRequest({
+        endpoint: "getUsers",
+        baseEndpoint: TEST_BASE_ENDPOINT,
+        method: "GET",
+        requiresAuth: false,
+        fetchFn
+      })
+
+      expect(fetchFn).toHaveBeenCalledWith(
+        `${TEST_BASE_ENDPOINT}/api/users`,
+        expect.objectContaining({
+          method: "GET"
+        })
+      )
+      expect(result.success).toBe(true)
+    } finally {
+      ;(globalThis as { window?: unknown }).window = originalWindow
+    }
+  })
+
+  it("supports frontend usage by routing internal calls through /api/diva proxy", async () => {
+    const originalWindow = (globalThis as { window?: unknown }).window
+    ;(globalThis as { window?: { location: { origin: string } } }).window = {
+      location: { origin: "http://localhost:5173" }
+    }
+
+    const fetchFn = vi.fn(async () =>
+      createMockResponse({
+        ok: true,
+        status: 200,
+        json: { success: true, data: [] }
+      })
+    )
+
+    try {
+      const result = await apiRequest({
+        endpoint: "getUsers",
+        baseEndpoint: TEST_BASE_ENDPOINT,
+        method: "GET",
+        requiresAuth: false,
+        fetchFn
+      })
+
+      expect(fetchFn).toHaveBeenCalledWith(
+        "/api/diva/getUsers",
+        expect.objectContaining({
+          method: "GET"
+        })
+      )
+      expect(result.success).toBe(true)
+    } finally {
+      ;(globalThis as { window?: unknown }).window = originalWindow
+    }
+  })
+
+  it("is SSR-safe by not using global token store on server runtime", async () => {
+    const originalWindow = (globalThis as { window?: unknown }).window
+    delete (globalThis as { window?: unknown }).window
+
+    mocks.getAccessTokenMock.mockReturnValue("global-token-from-store")
+
+    const fetchFn = vi.fn(async () =>
+      createMockResponse({
+        ok: true,
+        status: 200,
+        json: { success: true, data: [] }
+      })
+    )
+
+    try {
+      const result = await apiRequest({
+        endpoint: "getUsers",
+        baseEndpoint: TEST_BASE_ENDPOINT,
+        method: "GET",
+        requiresAuth: true,
+        fetchFn
+      })
+
+      const requestOptions = fetchFn.mock.calls[0][1] as RequestInit
+      const requestHeaders = requestOptions.headers as Record<string, string>
+      expect(requestHeaders.Authorization).toBeUndefined()
+      expect(result.success).toBe(true)
+    } finally {
+      ;(globalThis as { window?: unknown }).window = originalWindow
+    }
+  })
+
+  it("uses request-scoped authCredentials on server runtime", async () => {
+    const originalWindow = (globalThis as { window?: unknown }).window
+    delete (globalThis as { window?: unknown }).window
+
+    mocks.getAccessTokenMock.mockReturnValue("global-token-from-store")
+
+    const fetchFn = vi.fn(async () =>
+      createMockResponse({
+        ok: true,
+        status: 200,
+        json: { success: true, data: [] }
+      })
+    )
+
+    try {
+      const result = await apiRequest({
+        endpoint: "getUsers",
+        baseEndpoint: TEST_BASE_ENDPOINT,
+        method: "GET",
+        requiresAuth: true,
+        authCredentials: {
+          access_token: "request-scoped-token"
+        },
+        fetchFn
+      })
+
+      const requestOptions = fetchFn.mock.calls[0][1] as RequestInit
+      const requestHeaders = requestOptions.headers as Record<string, string>
+      expect(requestHeaders.Authorization).toBe("Bearer request-scoped-token")
+      expect(result.success).toBe(true)
+    } finally {
+      ;(globalThis as { window?: unknown }).window = originalWindow
+    }
+  })
+
   it("returns HTTP_ERROR with backend message", async () => {
     const fetchFn = vi.fn(async () =>
       createMockResponse({
@@ -202,6 +338,37 @@ describe("apiRequest", () => {
     }
   })
 
+  it("supports external API requests when external is true", async () => {
+    const externalUrl = "https://api.github.com/users/fujianto/repos"
+    const fetchFn = vi.fn(async () =>
+      createMockResponse({
+        ok: true,
+        status: 200,
+        json: [{ id: 1, name: "repo-1" }]
+      })
+    )
+
+    const result = await apiRequest<unknown[]>({
+      endpoint: externalUrl,
+      method: "GET",
+      external: true,
+      requiresAuth: false,
+      fetchFn
+    })
+
+    expect(fetchFn).toHaveBeenCalledWith(
+      externalUrl,
+      expect.objectContaining({
+        method: "GET",
+        credentials: "same-origin"
+      })
+    )
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data).toEqual([{ id: 1, name: "repo-1" }])
+    }
+  })
+
   it("refreshes and retries when access token is expired", async () => {
     const fetchFn = vi
       .fn()
@@ -259,5 +426,102 @@ describe("apiRequest", () => {
         refresh_token: "new-refresh-token"
       })
     }
+  })
+
+  it("retries when request times out and succeeds on next attempt", async () => {
+    const fetchFn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Request timeout"))
+      .mockResolvedValueOnce(
+        createMockResponse({
+          ok: true,
+          status: 200,
+          json: { success: true, data: [] }
+        })
+      )
+
+    const result = await apiRequest({
+      endpoint: "getUsers",
+      baseEndpoint: TEST_BASE_ENDPOINT,
+      method: "GET",
+      requiresAuth: false,
+      retryCount: 1,
+      retryDelayMs: 0,
+      fetchFn
+    })
+
+    expect(fetchFn).toHaveBeenCalledTimes(2)
+    expect(result.success).toBe(true)
+  })
+
+  it("retries when endpoint returns transient 503 error", async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createMockResponse({
+          ok: false,
+          status: 503,
+          json: { success: false, message: "Service unavailable" }
+        })
+      )
+      .mockResolvedValueOnce(
+        createMockResponse({
+          ok: true,
+          status: 200,
+          json: { success: true, data: [{ id: 1 }] }
+        })
+      )
+
+    const result = await apiRequest({
+      endpoint: "getUsers",
+      baseEndpoint: TEST_BASE_ENDPOINT,
+      method: "GET",
+      requiresAuth: false,
+      retryCount: 1,
+      retryDelayMs: 0,
+      fetchFn
+    })
+
+    expect(fetchFn).toHaveBeenCalledTimes(2)
+    expect(result.success).toBe(true)
+  })
+
+  it("applies exponential backoff between retries", async () => {
+    vi.useFakeTimers()
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout")
+
+    const fetchFn = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("Network failure"))
+      .mockRejectedValueOnce(new TypeError("Network failure"))
+      .mockResolvedValueOnce(
+        createMockResponse({
+          ok: true,
+          status: 200,
+          json: { success: true, data: [] }
+        })
+      )
+
+    const pending = apiRequest({
+      endpoint: "getUsers",
+      baseEndpoint: TEST_BASE_ENDPOINT,
+      method: "GET",
+      requiresAuth: false,
+      retryCount: 2,
+      retryDelayMs: 10,
+      retryBackoffMultiplier: 2,
+      fetchFn
+    })
+
+    await vi.runAllTimersAsync()
+    const result = await pending
+
+    expect(fetchFn).toHaveBeenCalledTimes(3)
+    expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 10)
+    expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 20)
+    expect(result.success).toBe(true)
+
+    setTimeoutSpy.mockRestore()
+    vi.useRealTimers()
   })
 })

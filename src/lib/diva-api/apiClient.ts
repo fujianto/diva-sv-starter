@@ -25,6 +25,9 @@ interface RequestOptions {
   external?: boolean
   requestKey?: string
   requiresAuth?: boolean
+  retryCount?: number
+  retryDelayMs?: number
+  retryBackoffMultiplier?: number
   fetchFn?: typeof fetch
 }
 
@@ -41,12 +44,16 @@ export async function apiRequest<T>({
   external = false,
   requestKey = endpoint,
   requiresAuth = true,
+  retryCount,
+  retryDelayMs = 0,
+  retryBackoffMultiplier = 2,
   fetchFn = fetch
 }: RequestOptions): Promise<ApiResponse<T>> {
 
   try {
 
     const isBrowser = typeof window !== "undefined"
+    const isServer = !isBrowser
     const endpointDef = external ? undefined : getEndpointByName(endpoint)
     const resolvedMethod = (external ? method : endpointDef?.method || method) as HttpMethod
     const endpointRoute = endpointDef ? resolveEndpointRoute(endpointDef, params) : undefined
@@ -122,9 +129,10 @@ export async function apiRequest<T>({
     const controller = createRequest(requestKey)
     try {
       let currentAuth: AuthCredentials | undefined = authCredentials
-      let token = currentAuth?.access_token ?? (requiresAuth ? getAccessToken() : null)
+      // SSR-safe: server-side calls must use request-scoped authCredentials only.
+      let token = currentAuth?.access_token ?? (requiresAuth && !isServer ? getAccessToken() : null)
 
-      if (requiresAuth && !currentAuth?.access_token && token && !external && isTokenExpired()) {
+      if (requiresAuth && !currentAuth?.access_token && token && !external && !isServer && isTokenExpired()) {
         await refreshAccessToken()
         token = getAccessToken()
       }
@@ -171,6 +179,57 @@ export async function apiRequest<T>({
             return [] as T
           }
           throw error
+        }
+      }
+
+      const shouldRetryStatus = (status: number): boolean =>
+        [408, 425, 429, 500, 502, 503, 504].includes(status)
+
+      const shouldRetryError = (error: unknown): boolean => {
+        if (!error || typeof error !== "object") {
+          return false
+        }
+
+        const candidate = error as { name?: string; message?: string }
+        if (candidate.name === "AbortError") {
+          return false
+        }
+
+        if (candidate.name === "TimeoutError" || error instanceof TypeError) {
+          return true
+        }
+
+        const message = (candidate.message || "").toLowerCase()
+        return message.includes("timeout") || message.includes("network")
+      }
+
+      const delay = async (ms: number): Promise<void> => {
+        if (ms <= 0) return
+        await new Promise((resolve) => setTimeout(resolve, ms))
+      }
+
+      const requestWithRetry = async (
+        requestFactory: () => Promise<Response>,
+        maxRetryCount: number
+      ): Promise<Response> => {
+        let attempt = 0
+        while (true) {
+          try {
+            const response = await requestFactory()
+            if (response.ok || !shouldRetryStatus(response.status) || attempt >= maxRetryCount) {
+              return response
+            }
+          } catch (error) {
+            if (!shouldRetryError(error) || attempt >= maxRetryCount) {
+              throw error
+            }
+          }
+
+          attempt += 1
+          const backoffDelay = retryDelayMs > 0
+            ? Math.round(retryDelayMs * Math.pow(retryBackoffMultiplier, attempt - 1))
+            : 0
+          await delay(backoffDelay)
         }
       }
 
@@ -265,13 +324,19 @@ export async function apiRequest<T>({
         }).catch(() => undefined)
       }
 
-      let res = await fetchFn(url, {
-        method: resolvedMethod,
-        credentials,
-        headers: createHeaders(token, currentAuth),
-        body: body ? JSON.stringify(body) : undefined,
-        signal: controller.signal
-      })
+      const resolvedRetryCount = retryCount ?? (resolvedMethod === "GET" ? 2 : 0)
+
+      let res = await requestWithRetry(
+        () =>
+          fetchFn(url, {
+            method: resolvedMethod,
+            credentials,
+            headers: createHeaders(token, currentAuth),
+            body: body ? JSON.stringify(body) : undefined,
+            signal: controller.signal
+          }),
+        resolvedRetryCount
+      )
 
       if (!res.ok) {
         const errorPayload = await parseErrorPayload(res)
@@ -285,13 +350,17 @@ export async function apiRequest<T>({
 
           if (refreshedCredentials?.access_token) {
             currentAuth = refreshedCredentials
-            res = await fetchFn(url, {
-              method: resolvedMethod,
-              credentials,
-              headers: createHeaders(currentAuth.access_token, currentAuth),
-              body: body ? JSON.stringify(body) : undefined,
-              signal: controller.signal
-            })
+            res = await requestWithRetry(
+              () =>
+                fetchFn(url, {
+                  method: resolvedMethod,
+                  credentials,
+                  headers: createHeaders(currentAuth.access_token, currentAuth),
+                  body: body ? JSON.stringify(body) : undefined,
+                  signal: controller.signal
+                }),
+              resolvedRetryCount
+            )
 
             if (res.ok) {
               await syncRefreshedAuthSession(currentAuth)

@@ -1,0 +1,29 @@
+flowchart TD
+  A["User submits login"] --> B["Backend calls login API"]
+  B --> C["authHandler.handleLogin(event, loginData)"]
+  C --> D["sessionHandler.createSession(...)"]
+  D --> E["Set cookies: access_token, refresh_token, expires_at"]
+  D --> F["Set event.locals.user + isAuthenticated=true"]
+
+  G["New request arrives"] --> H["hooks.server.ts authHook"]
+  H --> I["authHandler.loadAndValidateSession(event)"]
+  I --> J{"Session exists and valid?"}
+  J -->|Yes| K["Continue request with event.locals.user"]
+  J -->|No| L{"Has refresh token + expires_at?"}
+  L -->|No| M["Unauthenticated"]
+  L -->|Yes| N["sessionHandler.refreshSession(event)"]
+  N --> O{"Refresh success?"}
+  O -->|Yes| P["Update cookies + locals, continue"]
+  O -->|No| Q["clearSession() -> unauthenticated"]
+
+  K --> R{"Route protection enabled?"}
+  P --> R
+  R -->|No| S["Resolve route"]
+  R -->|Yes| T["authGuards.enforceConfiguredRoutes(event)"]
+  T --> U{"Path matches protected and not excluded?"}
+  U -->|No| S
+  U -->|Yes, authenticated| S
+  U -->|Yes, unauthenticated| V["Redirect 303 to /login?message=..."]
+
+  W["Logout action"] --> X["authHandler.handleLogout(event)"]
+  X --> Y["Delete auth cookies + clear locals"]

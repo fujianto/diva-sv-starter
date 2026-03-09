@@ -1,0 +1,44 @@
+flowchart TD
+  A["Caller (Frontend or Backend)"] --> B["apiRequest(options)"]
+
+  B --> C{"external = true?"}
+  C -->|Yes| D["Use endpoint as absolute URL"]
+  C -->|No| E["Resolve endpoint from endpointMap"]
+
+  E --> F{"Runtime"}
+  F -->|Browser| G["Build proxy URL: /api/diva/[name]"]
+  F -->|Server| H["Build URL with BASE_ENDPOINT + route"]
+
+  B --> I["Apply route params + query params"]
+  D --> I
+  G --> I
+  H --> I
+
+  B --> J["createRequest(requestKey)"]
+  J --> K["Dedupe: abort previous same key request"]
+
+  B --> L["Build headers (Content-Type, Authorization, refresh headers)"]
+  L --> M["Execute fetch with AbortController.signal"]
+
+  M --> N{"Response OK?"}
+  N -->|Yes| O["Parse JSON (empty/invalid success body => [])"]
+  O --> P["Return success response"]
+
+  N -->|No| Q{"Transient error/status?"}
+  Q -->|Yes| R["Retry with exponential backoff"]
+  R --> M
+  Q -->|No| S{"Auth expired and refresh_token available?"}
+
+  S -->|Yes| T["Call doRefreshToken endpoint"]
+  T --> U{"Refresh success?"}
+  U -->|Yes| V["Retry original request with new token"]
+  V --> W{"Browser?"}
+  W -->|Yes| X["Sync refreshed credentials to /api/auth/session"]
+  W -->|No| Y["Skip session sync"]
+  V --> M
+  U -->|No| Z["Return normalized HTTP_ERROR"]
+
+  S -->|No| Z
+
+  Z --> AA["Return error response"]
+  K --> AB["AbortError => REQUEST_ABORTED"]
